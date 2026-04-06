@@ -29,12 +29,12 @@ jobs:
           PROMPT_ESCAPED=$(printf '%s' "$PROMPT_TEXT" | jq -Rs .)
 
           # Create JSON payload
-          JSON_PAYLOAD=$(cat <<EOF
+          JSON_PAYLOAD=$(cat <<JSON_END
 {
   "repo": "${{ github.event.repository.clone_url }}",
   "prompt": $PROMPT_ESCAPED
 }
-EOF
+JSON_END
 )
 
           # Make API call to create task
