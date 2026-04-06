@@ -1,0 +1,86 @@
+name: AI Agent Task Creation
+
+on:
+  issues:
+    types: [opened, labeled]
+
+jobs:
+  create-ai-task:
+    # Only run if issue is newly opened OR if 'ai-agent' label was added
+    if: github.event.action == 'opened' || (github.event.action == 'labeled' && github.event.label.name == 'ai-agent')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create AI Agent Task
+        run: |
+          # Extract issue information
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          ISSUE_BODY="${{ github.event.issue.body }}"
+          ISSUE_URL="${{ github.event.issue.html_url }}"
+
+          # Combine title and body for the prompt
+          PROMPT="Issue: $ISSUE_TITLE
+
+          $ISSUE_BODY
+
+          Issue URL: $ISSUE_URL"
+
+          # Make API call to create task
+          response=$(curl -X POST https://coding-agent.smartbyte.pl/api/solve \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CODING_AGENT_API_KEY }}" \
+            -d "{
+              \"repo\": \"${{ github.event.repository.clone_url }}\",
+              \"prompt\": $(echo "$PROMPT" | jq -Rs .)
+            }" \
+            -w "HTTP_STATUS:%{http_code}" \
+            -s)
+
+          # Extract HTTP status code
+          http_code=$(echo "$response" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+          response_body=$(echo "$response" | sed 's/HTTP_STATUS:[0-9]*$//')
+
+          echo "API Response Status: $http_code"
+          echo "API Response Body: $response_body"
+
+          # Check if request was successful
+          if [[ $http_code -ge 200 && $http_code -lt 300 ]]; then
+            echo "✅ AI Agent task created successfully"
+          else
+            echo "❌ Failed to create AI Agent task"
+            exit 1
+          fi
+
+      - name: Comment on Issue
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🤖 **AI Agent Task Created**
+
+              Your issue has been submitted to the AI coding agent for processing.
+
+              **Task Details:**
+              - Repository: ${context.repo.owner}/${context.repo.repo}
+              - Issue: #${context.issue.number}
+              - Status: Task submitted successfully
+
+              The AI agent will analyze your issue and work on a solution.`
+            })
+
+# CONFIGURATION NOTES:
+#
+# To configure the API authentication for this workflow:
+# 1. Go to your GitHub repository settings
+# 2. Navigate to Settings > Secrets and variables > Actions
+# 3. Click "New repository secret"
+# 4. Name: CODING_AGENT_API_KEY
+# 5. Value: Your API key from coding-agent.smartbyte.pl
+# 6. Click "Add secret"
+#
+# The workflow will use this secret as the Bearer token for API authentication.
+# Never commit API keys directly to your repository - always use GitHub secrets!
