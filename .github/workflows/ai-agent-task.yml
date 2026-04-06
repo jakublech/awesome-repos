@@ -13,26 +13,35 @@ jobs:
     steps:
       - name: Create AI Agent Task
         run: |
-          # Extract issue information
-          ISSUE_TITLE="${{ github.event.issue.title }}"
-          ISSUE_BODY="${{ github.event.issue.body }}"
-          ISSUE_URL="${{ github.event.issue.html_url }}"
+          # Extract issue information and escape for JSON
+          ISSUE_TITLE=$(printf '%s' '${{ github.event.issue.title }}' | jq -Rs .)
+          ISSUE_BODY=$(printf '%s' '${{ github.event.issue.body }}' | jq -Rs .)
+          ISSUE_URL=$(printf '%s' '${{ github.event.issue.html_url }}' | jq -Rs .)
 
-          # Combine title and body for the prompt
-          PROMPT="Issue: $ISSUE_TITLE
+          # Construct the prompt
+          PROMPT_TEXT="Issue: ${{ github.event.issue.title }}
 
-          $ISSUE_BODY
+          ${{ github.event.issue.body }}
 
-          Issue URL: $ISSUE_URL"
+          Issue URL: ${{ github.event.issue.html_url }}"
+
+          # Escape the entire prompt for JSON
+          PROMPT_ESCAPED=$(printf '%s' "$PROMPT_TEXT" | jq -Rs .)
+
+          # Create JSON payload
+          JSON_PAYLOAD=$(cat <<EOF
+{
+  "repo": "${{ github.event.repository.clone_url }}",
+  "prompt": $PROMPT_ESCAPED
+}
+EOF
+)
 
           # Make API call to create task
           response=$(curl -X POST https://coding-agent.smartbyte.pl/api/solve \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.CODING_AGENT_API_KEY }}" \
-            -d "{
-              \"repo\": \"${{ github.event.repository.clone_url }}\",
-              \"prompt\": $(echo "$PROMPT" | jq -Rs .)
-            }" \
+            -d "$JSON_PAYLOAD" \
             -w "HTTP_STATUS:%{http_code}" \
             -s)
 
