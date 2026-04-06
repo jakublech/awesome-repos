@@ -22,11 +22,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
       
-      - name: Fetch and categorize repos
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/fetch_and_categorize.py
+      # - name: Fetch and categorize repos
+      #   env:
+      #     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   run: python scripts/fetch_and_categorize.py
       
       - name: Commit and push changes
         run: |
