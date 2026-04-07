@@ -1,95 +1,148 @@
-name: AI Agent Task Creation
+name: AI Coding Agent - Issue Handler
+
+# Automatically submits issues labeled 'ai-agent' to the AI Coding Agent platform.
+#
+# Required setup:
+# 1. Repository Variable: AI_AGENT_URL (e.g., https://coding-agent.smartbyte.pl)
+# 2. Repository Secret: AI_AGENT_API_KEY (create via dashboard after OAuth login)
+#
+# Optional labels:
+# - branch:branch-name - Set the base branch (default: test)
 
 on:
   issues:
     types: [opened, labeled]
 
+# Required permissions for commenting on issues
+permissions:
+  issues: write
+  contents: read
+
 jobs:
-  create-ai-task:
-    # Only run if issue is newly opened OR if 'ai-agent' label was added
-    if: github.event.action == 'opened' || (github.event.action == 'labeled' && github.event.label.name == 'ai-agent')
+  submit-task:
+    # Only run if issue has 'ai-agent' label
+    if: contains(github.event.issue.labels.*.name, 'ai-agent')
     runs-on: ubuntu-latest
 
     steps:
-      - name: Create AI Agent Task
-        run: |
-          # Extract issue information and escape for JSON
-          ISSUE_TITLE=$(printf '%s' '${{ github.event.issue.title }}' | jq -Rs .)
-          ISSUE_BODY=$(printf '%s' '${{ github.event.issue.body }}' | jq -Rs .)
-          ISSUE_URL=$(printf '%s' '${{ github.event.issue.html_url }}' | jq -Rs .)
+      - name: Extract Branch from Labels
+        id: branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.issue.labels || [];
+            let baseBranch = 'test';
 
-          # Construct the prompt
-          PROMPT_TEXT="Issue: ${{ github.event.issue.title }}
+            for (const label of labels) {
+              if (label.name.startsWith('branch:')) {
+                baseBranch = label.name.substring(7); // Remove 'branch:' prefix
+                break;
+              }
+            }
+
+            console.log(`Base branch: ${baseBranch}`);
+            core.setOutput('base_branch', baseBranch);
+
+      - name: Submit Task to AI Agent
+        id: submit
+        env:
+          AI_AGENT_URL: ${{ vars.AI_AGENT_URL }}
+          AI_AGENT_API_KEY: ${{ secrets.AI_AGENT_API_KEY }}
+          BASE_BRANCH: ${{ steps.branch.outputs.base_branch }}
+        run: |
+          # Default URL if not set
+          API_URL="${AI_AGENT_URL:-https://coding-agent.smartbyte.pl}"
+
+          echo "Using base branch: $BASE_BRANCH"
+
+          # Build request payload
+          PAYLOAD=$(jq -n \
+            --arg repo "https://github.com/${{ github.repository }}" \
+            --arg prompt "$(cat << 'EOF'
+          Issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}
 
           ${{ github.event.issue.body }}
 
-          Issue URL: ${{ github.event.issue.html_url }}"
+          Please fix this issue and ensure all tests pass.
+          EOF
+          )" \
+            --arg base_branch "$BASE_BRANCH" \
+            --argjson max_iterations 5 \
+            '{repo: $repo, prompt: $prompt, base_branch: $base_branch, max_iterations: $max_iterations}')
 
-          # Escape the entire prompt for JSON
-          PROMPT_ESCAPED=$(printf '%s' "$PROMPT_TEXT" | jq -Rs .)
+          echo "Submitting task to $API_URL/api/solve"
+          echo "Payload: $PAYLOAD"
 
-          # Create JSON payload
-          JSON_PAYLOAD=$(cat <<JSON_END
-{
-  "repo": "${{ github.event.repository.clone_url }}",
-  "prompt": $PROMPT_ESCAPED
-}
-JSON_END
-)
-
-          # Make API call to create task
-          response=$(curl -X POST https://coding-agent.smartbyte.pl/api/solve \
+          # Submit task using API key (created via dashboard)
+          RESPONSE=$(curl -s -X POST "$API_URL/api/solve" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.CODING_AGENT_API_KEY }}" \
-            -d "$JSON_PAYLOAD" \
-            -w "HTTP_STATUS:%{http_code}" \
-            -s)
+            -H "Authorization: Bearer $AI_AGENT_API_KEY" \
+            -d "$PAYLOAD")
 
-          # Extract HTTP status code
-          http_code=$(echo "$response" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
-          response_body=$(echo "$response" | sed 's/HTTP_STATUS:[0-9]*$//')
+          echo "Response: $RESPONSE"
 
-          echo "API Response Status: $http_code"
-          echo "API Response Body: $response_body"
+          # Extract task ID
+          TASK_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
 
-          # Check if request was successful
-          if [[ $http_code -ge 200 && $http_code -lt 300 ]]; then
-            echo "✅ AI Agent task created successfully"
-          else
-            echo "❌ Failed to create AI Agent task"
+          if [ -z "$TASK_ID" ]; then
+            echo "Failed to create task"
+            echo "error=$(echo "$RESPONSE" | jq -r '.detail // .message // "Unknown error"')" >> $GITHUB_OUTPUT
             exit 1
           fi
 
-      - name: Comment on Issue
+          echo "task_id=$TASK_ID" >> $GITHUB_OUTPUT
+          echo "Task created: $TASK_ID"
+
+      - name: Comment on Issue - Task Started
         if: success()
         uses: actions/github-script@v7
         with:
           script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
+            const taskId = '${{ steps.submit.outputs.task_id }}';
+            const baseBranch = '${{ steps.branch.outputs.base_branch }}';
+            const agentUrl = '${{ vars.AI_AGENT_URL }}' || 'https://coding-agent.smartbyte.pl';
+
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `🤖 **AI Agent Task Created**
+              issue_number: context.issue.number,
+              body: `🤖 **AI Coding Agent Task Started**
 
-              Your issue has been submitted to the AI coding agent for processing.
+              Task ID: \`${taskId}\`
+              Base Branch: \`${baseBranch}\`
 
-              **Task Details:**
-              - Repository: ${context.repo.owner}/${context.repo.repo}
-              - Issue: #${context.issue.number}
-              - Status: Task submitted successfully
+              The AI agent is now working on this issue. It will:
+              1. Analyze the codebase
+              2. Make necessary changes
+              3. Run tests to verify the fix
+              4. Create a Pull Request when complete
 
-              The AI agent will analyze your issue and work on a solution.`
-            })
+              You can track progress at: ${agentUrl}
 
-# CONFIGURATION NOTES:
-#
-# To configure the API authentication for this workflow:
-# 1. Go to your GitHub repository settings
-# 2. Navigate to Settings > Secrets and variables > Actions
-# 3. Click "New repository secret"
-# 4. Name: CODING_AGENT_API_KEY
-# 5. Value: Your API key from coding-agent.smartbyte.pl
-# 6. Click "Add secret"
-#
-# The workflow will use this secret as the Bearer token for API authentication.
-# Never commit API keys directly to your repository - always use GitHub secrets!
+              ---
+              *This comment was automatically generated by the AI Coding Agent.*`
+            });
+
+      - name: Comment on Issue - Task Failed
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const error = '${{ steps.submit.outputs.error }}' || 'Unknown error';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `❌ **AI Coding Agent - Failed to Start**
+
+              Error: ${error}
+
+              Please check that:
+              - The AI Agent service is running
+              - The \`AI_AGENT_URL\` variable is configured
+              - The \`AI_AGENT_API_KEY\` secret contains a valid API key (create one via the dashboard)
+
+              ---
+              *This comment was automatically generated by the AI Coding Agent.*`
+            });
